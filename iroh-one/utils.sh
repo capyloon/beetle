@@ -5,8 +5,8 @@ function setup_xcompile_envs() {
     # TODO: do the inverse mapping instead since we'll get the clang arch when running
     #       from Android.mk
     export TARGET_ARCH=${TARGET_ARCH:-armv7-linux-androideabi}
-    export ANDROID_API=${ANDROID_API:-33}
-    export ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-33}
+    export ANDROID_API=${ANDROID_API:-29}
+    export ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-29}
     LIB_SUFFIX=""
     IS_MACOS=0
 
@@ -32,13 +32,13 @@ function setup_xcompile_envs() {
         TARGET_TRIPLE=aarch64-apple-darwin
         TARGET_INCLUDE=${TARGET_TRIPLE}
         LIB_SUFFIX=64
-	    IS_MACOS=1
+	IS_MACOS=1
         ;;
     x86_64-apple-darwin)
         TARGET_TRIPLE=x86_64-apple-darwin
         TARGET_INCLUDE=${TARGET_TRIPLE}
         LIB_SUFFIX=64
-	    IS_MACOS=1
+	IS_MACOS=1
         ;;
     aarch64-unknown-linux-gnu)
         # Non-android targets will use the toolchain installed in $HOME/.mozbuild
@@ -82,7 +82,6 @@ function setup_xcompile_envs() {
         export SYS_INCLUDE_DIR=${SYSROOT}/usr/include
         export ANDROID_NDK=${BUILD_WITH_NDK_DIR}
         export PATH=${ANDROID_NDK}${NDK_TOOLS_PATH}/bin:${PATH}
-        export AR=${BUILD_WITH_NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         export LINKER=${TOOLCHAIN_CC}
 
         echo "Building for ${TARGET_TRIPLE} using NDK '${BUILD_WITH_NDK_DIR}'"
@@ -92,7 +91,7 @@ function setup_xcompile_envs() {
         export SYSROOT=${MOZBUILD}/sysroot-${TARGET_INCLUDE}
         export SYS_INCLUDE_DIR=${SYSROOT}/usr/include
         export PATH=${MOZBUILD}/clang/bin:${PATH}
-        export LINKER=${TOOLCHAIN_CC}
+        export LINKER=${MOZBUILD}/clang/bin/clang
 
         echo "Building for ${TARGET_TRIPLE} using MOZBUILD '${MOZBUILD}'"
     else
@@ -176,7 +175,7 @@ EOF
         cat <<EOF >>$CARGO_CONFIG
   "-C", "link-arg=--sysroot=${SYSROOT}",
   "-C", "link-arg=-L",
-  "-C", "link-arg=${GONK_DIR}/out/target/product/${GONK_PRODUCT}/system/lib${LIB_SUFFIX}",
+  "-C", "link-arg=${BUILD_WITH_NDK_DIR}/lib/gcc/${TARGET_TRIPLE}/4.9.x",
   "-C", "link-arg=-L",
   "-C", "link-arg=${BUILD_WITH_NDK_DIR}/sysroot/usr/lib/${TARGET_TRIPLE}/${ANDROID_API}",
   "-C", "link-arg=-Wl,-rpath,${GONK_DIR}/out/target/product/${GONK_PRODUCT}/system/lib${LIB_SUFFIX}",
@@ -211,7 +210,7 @@ EOF
 # export TARGET_LD=${TOOLCHAIN_CC}
 # EOF
 
-    # printenv
+    printenv
     rustc --version
     cargo --version
     cargo build --target=${TARGET_TRIPLE} --features=${FEATURES} ${OPT}
