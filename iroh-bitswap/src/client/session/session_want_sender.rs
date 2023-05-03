@@ -3,11 +3,9 @@ use std::cmp::Ordering;
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use cid::Cid;
-use iroh_metrics::core::MRecorder;
-use iroh_metrics::{bitswap::BitswapMetrics, inc};
 use libp2p::PeerId;
+use log::{debug, error, info, warn};
 use tokio::{sync::oneshot, task::JoinHandle};
-use tracing::{debug, error, info, warn};
 
 use crate::client::{
     block_presence_manager::BlockPresenceManager, peer_manager::PeerManager,
@@ -165,7 +163,6 @@ impl SessionWantSender {
         let worker = rt.spawn(async move {
             // The main loop for processing incoming changes
             loop {
-                inc!(BitswapMetrics::SessionWantSenderLoopTick);
                 tokio::select! {
                     biased;
                     _ = &mut closer_r => {

@@ -1,8 +1,8 @@
 mod behaviour;
 pub mod cli;
 pub mod config;
+mod global_only;
 mod keys;
-pub mod metrics;
 mod node;
 mod providers;
 pub mod rpc;

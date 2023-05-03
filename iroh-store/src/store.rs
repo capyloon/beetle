@@ -4,11 +4,6 @@ use ahash::AHashSet;
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use cid::Cid;
-use iroh_metrics::{
-    core::{MObserver, MRecorder},
-    inc, observe, record,
-    store::{StoreHistograms, StoreMetrics},
-};
 use multihash::Multihash;
 use rocksdb::{
     BlockBasedOptions, Cache, ColumnFamily, DBPinnableSlice, Direction, IteratorMode, Options,
@@ -99,7 +94,7 @@ struct CodeAndId {
 
 impl Store {
     /// Creates a new database.
-    #[tracing::instrument]
+
     pub async fn create(config: Config) -> Result<Self> {
         let (mut options, cache) = default_options();
         options.create_if_missing(true);
@@ -138,7 +133,7 @@ impl Store {
     }
 
     /// Opens an existing database.
-    #[tracing::instrument]
+
     pub async fn open(config: Config) -> Result<Self> {
         let (mut options, cache) = default_options();
         options.create_if_missing(false);
@@ -182,7 +177,6 @@ impl Store {
         })
     }
 
-    #[tracing::instrument(skip(self, links, blob))]
     pub fn put<T: AsRef<[u8]>, L>(&self, cid: Cid, blob: T, links: L) -> Result<()>
     where
         L: IntoIterator<Item = Cid>,
@@ -190,42 +184,34 @@ impl Store {
         self.write_store()?.put(cid, blob, links)
     }
 
-    #[tracing::instrument(skip(self, blocks))]
     pub fn put_many(&self, blocks: impl IntoIterator<Item = (Cid, Bytes, Vec<Cid>)>) -> Result<()> {
         self.write_store()?.put_many(blocks)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_blob_by_hash(&self, hash: &Multihash) -> Result<Option<DBPinnableSlice<'_>>> {
         self.read_store()?.get_blob_by_hash(hash)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn has_blob_for_hash(&self, hash: &Multihash) -> Result<bool> {
         self.read_store()?.has_blob_for_hash(hash)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get(&self, cid: &Cid) -> Result<Option<DBPinnableSlice<'_>>> {
         self.read_store()?.get(cid)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_size(&self, cid: &Cid) -> Result<Option<usize>> {
         self.read_store()?.get_size(cid)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn has(&self, cid: &Cid) -> Result<bool> {
         self.read_store()?.has(cid)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_links(&self, cid: &Cid) -> Result<Option<Vec<Cid>>> {
         self.read_store()?.get_links(cid)
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn consistency_check(&self) -> Result<Vec<String>> {
         self.read_store()?.consistency_check()
     }
@@ -318,15 +304,11 @@ impl<'a> WriteStore<'a> {
     where
         L: IntoIterator<Item = Cid>,
     {
-        inc!(StoreMetrics::PutRequests);
-
         if self.has(&cid)? {
             return Ok(());
         }
 
         let id = self.next_id();
-
-        let start = std::time::Instant::now();
 
         let id_bytes = id.to_be_bytes();
 
@@ -343,7 +325,6 @@ impl<'a> WriteStore<'a> {
 
         let graph = GraphV0 { children };
         let graph_bytes = rkyv::to_bytes::<_, 1024>(&graph)?; // TODO: is this the right amount of scratch space?
-        let blob_size = blob.as_ref().len();
 
         let mut batch = WriteBatch::default();
         batch.put_cf(self.cf.id, id_key, id_bytes);
@@ -351,17 +332,11 @@ impl<'a> WriteStore<'a> {
         batch.put_cf(self.cf.metadata, id_bytes, metadata_bytes);
         batch.put_cf(self.cf.graph, id_bytes, graph_bytes);
         self.db.write(batch)?;
-        observe!(StoreHistograms::PutRequests, start.elapsed().as_secs_f64());
-        record!(StoreMetrics::PutBytes, blob_size as u64);
 
         Ok(())
     }
 
     fn put_many(&mut self, blocks: impl IntoIterator<Item = (Cid, Bytes, Vec<Cid>)>) -> Result<()> {
-        inc!(StoreMetrics::PutRequests);
-        let start = std::time::Instant::now();
-        let mut total_blob_size = 0;
-
         let mut batch = WriteBatch::default();
         let mut cid_tracker: AHashSet<Cid> = AHashSet::default();
         for (cid, blob, links) in blocks.into_iter() {
@@ -389,9 +364,6 @@ impl<'a> WriteStore<'a> {
             let graph = GraphV0 { children };
             let graph_bytes = rkyv::to_bytes::<_, 1024>(&graph)?; // TODO: is this the right amount of scratch space?
 
-            let blob_size = blob.as_ref().len();
-            total_blob_size += blob_size as u64;
-
             batch.put_cf(self.cf.id, id_key, id_bytes);
             batch.put_cf(self.cf.blobs, id_bytes, blob);
             batch.put_cf(self.cf.metadata, id_bytes, metadata_bytes);
@@ -399,14 +371,10 @@ impl<'a> WriteStore<'a> {
         }
 
         self.db.write(batch)?;
-        observe!(StoreHistograms::PutRequests, start.elapsed().as_secs_f64());
-        record!(StoreMetrics::PutBytes, total_blob_size);
-
         Ok(())
     }
 
     /// Takes a list of cids and gives them ids, which are both stored and then returned.
-    #[tracing::instrument(skip(self, cids))]
     fn ensure_id_many<I>(&mut self, cids: I) -> Result<Vec<u64>>
     where
         I: IntoIterator<Item = Cid>,
@@ -437,7 +405,6 @@ impl<'a> WriteStore<'a> {
         Ok(ids)
     }
 
-    #[tracing::instrument(skip(self))]
     fn next_id(&mut self) -> u64 {
         let id = *self.next_id;
         if let Some(next_id) = self.next_id.checked_add(1) {
@@ -448,7 +415,6 @@ impl<'a> WriteStore<'a> {
         id
     }
 
-    #[tracing::instrument(skip(self))]
     fn get_id(&self, cid: &Cid) -> Result<Option<u64>> {
         let id_key = id_key(cid);
         let maybe_id_bytes = self.db.get_pinned_cf(self.cf.id, id_key)?;
@@ -477,38 +443,22 @@ impl<'a> WriteStore<'a> {
 
 impl<'a> ReadStore<'a> {
     fn get(&self, cid: &Cid) -> Result<Option<DBPinnableSlice<'a>>> {
-        inc!(StoreMetrics::GetRequests);
-        let start = std::time::Instant::now();
-        let res = match self.get_id(cid)? {
+        match self.get_id(cid)? {
             Some(id) => {
                 let maybe_blob = self.get_by_id(id)?;
-                inc!(StoreMetrics::StoreHit);
-                record!(
-                    StoreMetrics::GetBytes,
-                    maybe_blob.as_ref().map(|b| b.len()).unwrap_or(0) as u64
-                );
                 Ok(maybe_blob)
             }
-            None => {
-                inc!(StoreMetrics::StoreMiss);
-                Ok(None)
-            }
-        };
-        observe!(StoreHistograms::GetRequests, start.elapsed().as_secs_f64());
-        res
+            None => Ok(None),
+        }
     }
 
     fn get_size(&self, cid: &Cid) -> Result<Option<usize>> {
         match self.get_id(cid)? {
             Some(id) => {
-                inc!(StoreMetrics::StoreHit);
                 let maybe_size = self.get_size_by_id(id)?;
                 Ok(maybe_size)
             }
-            None => {
-                inc!(StoreMetrics::StoreMiss);
-                Ok(None)
-            }
+            None => Ok(None),
         }
     }
 
@@ -526,27 +476,15 @@ impl<'a> ReadStore<'a> {
     }
 
     fn get_links(&self, cid: &Cid) -> Result<Option<Vec<Cid>>> {
-        inc!(StoreMetrics::GetLinksRequests);
-        let start = std::time::Instant::now();
-        let res = match self.get_id(cid)? {
+        match self.get_id(cid)? {
             Some(id) => {
                 let maybe_links = self.get_links_by_id(id)?;
-                inc!(StoreMetrics::GetLinksHit);
                 Ok(maybe_links)
             }
-            None => {
-                inc!(StoreMetrics::GetLinksMiss);
-                Ok(None)
-            }
-        };
-        observe!(
-            StoreHistograms::GetLinksRequests,
-            start.elapsed().as_secs_f64()
-        );
-        res
+            None => Ok(None),
+        }
     }
 
-    #[tracing::instrument(skip(self))]
     fn get_id(&self, cid: &Cid) -> Result<Option<u64>> {
         let id_key = id_key(cid);
         let maybe_id_bytes = self.db.get_pinned_cf(self.cf.id, id_key)?;
@@ -596,7 +534,6 @@ impl<'a> ReadStore<'a> {
         Ok(None)
     }
 
-    #[tracing::instrument(skip(self))]
     fn has_blob_for_hash(&self, hash: &Multihash) -> Result<bool> {
         for elem in self.get_ids_for_hash(hash)? {
             let id = elem?.id;
@@ -608,21 +545,18 @@ impl<'a> ReadStore<'a> {
         Ok(false)
     }
 
-    #[tracing::instrument(skip(self))]
     fn get_by_id(&self, id: u64) -> Result<Option<DBPinnableSlice<'a>>> {
         let maybe_blob = self.db.get_pinned_cf(self.cf.blobs, id.to_be_bytes())?;
 
         Ok(maybe_blob)
     }
 
-    #[tracing::instrument(skip(self))]
     fn get_size_by_id(&self, id: u64) -> Result<Option<usize>> {
         let maybe_blob = self.db.get_pinned_cf(self.cf.blobs, id.to_be_bytes())?;
         let maybe_size = maybe_blob.map(|b| b.len());
         Ok(maybe_size)
     }
 
-    #[tracing::instrument(skip(self))]
     fn get_links_by_id(&self, id: u64) -> Result<Option<Vec<Cid>>> {
         let id_bytes = id.to_be_bytes();
         // FIXME: can't use pinned because otherwise this can trigger alignment issues :/

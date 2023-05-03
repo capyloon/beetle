@@ -3,11 +3,11 @@ use clap::Parser;
 use iroh_store::{
     cli::Args,
     config::{config_data_path, Config, ServerConfig, CONFIG_FILE_NAME, ENV_PREFIX},
-    metrics, rpc, Store,
+    rpc, Store,
 };
 use iroh_util::lock::ProgramLock;
 use iroh_util::{block_until_sigint, iroh_config_path, make_config};
-use tracing::info;
+use log::{debug, error, info};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -33,19 +33,12 @@ async fn main() -> anyhow::Result<()> {
         args.make_overrides_map(),
     )
     .unwrap();
-    let metrics_config = config.metrics.clone();
-
-    let metrics_handle = iroh_metrics::MetricsHandle::new(
-        metrics::metrics_config_with_compile_time_info(metrics_config),
-    )
-    .await
-    .expect("failed to initialize metrics");
 
     #[cfg(unix)]
     {
         match iroh_util::increase_fd_limit() {
-            Ok(soft) => tracing::debug!("NOFILE limit: soft = {}", soft),
-            Err(err) => tracing::error!("Error increasing NOFILE limit: {}", err),
+            Ok(soft) => debug!("NOFILE limit: soft = {}", soft),
+            Err(err) => error!("Error increasing NOFILE limit: {}", err),
         }
     }
 
@@ -65,7 +58,6 @@ async fn main() -> anyhow::Result<()> {
 
     block_until_sigint().await;
     rpc_task.abort();
-    metrics_handle.shutdown();
 
     Ok(())
 }

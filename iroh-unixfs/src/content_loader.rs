@@ -14,8 +14,8 @@ use cid::{multibase::Base, Cid};
 use futures::future::Either;
 use futures::StreamExt;
 use iroh_rpc_client::Client;
+use log::{debug, info, trace, warn};
 use reqwest::Url;
-use tracing::{debug, info, trace, warn};
 
 use crate::{
     builder::FileBuilder,
@@ -358,7 +358,7 @@ impl ContentLoader for FullLoader {
             Some(root_cid) => {
                 // This fails if Kademlia is not enabled, which can be the case
                 // and it's ok.
-                let _ = self.client.try_p2p()?.start_providing(&root_cid).await;
+                let _ = self.client.try_p2p()?.start_providing(root_cid).await;
                 Ok(*root_cid)
             }
             None => Err(anyhow!("no root cid!")),
@@ -386,7 +386,7 @@ impl ContentLoader for FullLoader {
             Some(root_cid) => {
                 // This fails if Kademlia is not enabled, which can be the case
                 // and it's ok.
-                let _ = self.client.try_p2p()?.start_providing(&root_cid).await;
+                let _ = self.client.try_p2p()?.start_providing(root_cid).await;
                 Ok(*root_cid)
             }
             None => Err(anyhow!("no root cid!")),

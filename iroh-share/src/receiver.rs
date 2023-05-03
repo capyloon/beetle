@@ -8,10 +8,10 @@ use iroh_resolver::resolver::{Out, OutPrettyReader, OutType, Path, Resolver, Uni
 use iroh_unixfs::Link;
 use libp2p::gossipsub::{GossipsubMessage, MessageId, TopicHash};
 use libp2p::PeerId;
+use log::{debug, info, warn};
 use tokio::sync::mpsc::{channel, Receiver as ChannelReceiver};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, warn};
 
 use crate::SenderMessage;
 use crate::{
@@ -233,12 +233,11 @@ impl Data {
     }
 
     pub fn read_dir(&self) -> Result<Option<impl Stream<Item = Result<Link>> + '_>> {
-        self.root
-            .unixfs_read_dir(&self.resolver, Default::default())
+        self.root.unixfs_read_dir(&self.resolver)
     }
 
     pub fn pretty(self) -> Result<OutPrettyReader<Loader>> {
-        self.root.pretty(self.resolver, Default::default(), None)
+        self.root.pretty(self.resolver, None)
     }
 
     pub async fn read_file(&self, link: &Link) -> Result<Data> {

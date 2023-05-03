@@ -10,10 +10,9 @@ use ahash::AHashMap;
 use anyhow::{anyhow, Result};
 use cid::Cid;
 use futures::FutureExt;
-use iroh_metrics::{bitswap::BitswapMetrics, core::MRecorder, inc};
 use libp2p::PeerId;
+use log::debug;
 use tokio::sync::RwLock;
-use tracing::debug;
 
 use crate::{network::Network, Block};
 
@@ -123,8 +122,6 @@ impl SessionManager {
         provider_search_delay: Duration,
         rebroadcast_delay: Duration,
     ) -> Session {
-        inc!(BitswapMetrics::SessionsCreated);
-
         let session = Session::new(
             session_id,
             self.clone(),

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use config::{ConfigError, Map, Source, Value};
-use iroh_metrics::config::Config as MetricsConfig;
 use iroh_rpc_client::Config as RpcClientConfig;
 use iroh_rpc_types::p2p::P2pAddr;
 use iroh_util::{insert_into_config_map, iroh_data_root};
@@ -38,7 +37,6 @@ pub const DEFAULT_BOOTSTRAP: &[&str] = &[
 #[derive(PartialEq, Debug, Deserialize, Serialize, Clone)]
 pub struct ServerConfig {
     pub p2p: Config,
-    pub metrics: MetricsConfig,
 }
 
 impl ServerConfig {
@@ -51,7 +49,6 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             p2p: Config::default_network(),
-            metrics: Default::default(),
         }
     }
 }
@@ -64,7 +61,6 @@ impl Source for ServerConfig {
     fn collect(&self) -> Result<Map<String, Value>, ConfigError> {
         let mut map: Map<String, Value> = Map::new();
         insert_into_config_map(&mut map, "p2p", self.p2p.collect()?);
-        insert_into_config_map(&mut map, "metrics", self.metrics.collect()?);
         Ok(map)
     }
 }
@@ -101,6 +97,8 @@ pub struct Libp2pConfig {
     pub notify_handler_buffer_size: usize,
     pub connection_event_buffer_size: usize,
     pub dial_concurrency_factor: u8,
+    /// Don't dial RFC 1918 addresses if enabled.
+    pub global_only: bool,
 }
 
 /// Configuration for the [`iroh-p2p`] node.
@@ -184,6 +182,7 @@ impl Source for Libp2pConfig {
             .map(|b| b.to_string())
             .collect();
         insert_into_config_map(&mut map, "listening_multiaddrs", addrs);
+        insert_into_config_map(&mut map, "global_only", self.global_only);
         Ok(map)
     }
 }
@@ -231,6 +230,7 @@ impl Default for Libp2pConfig {
             notify_handler_buffer_size: 256,
             connection_event_buffer_size: 256,
             dial_concurrency_factor: 8,
+            global_only: false,
         }
     }
 }
@@ -290,10 +290,6 @@ mod tests {
         expect.insert(
             "p2p".to_string(),
             Value::new(None, default.p2p.collect().unwrap()),
-        );
-        expect.insert(
-            "metrics".to_string(),
-            Value::new(None, default.metrics.collect().unwrap()),
         );
 
         let got = default.collect().unwrap();
@@ -368,6 +364,10 @@ mod tests {
             Value::new(None, bootstrap_peers),
         );
         expect.insert("listening_multiaddrs".to_string(), Value::new(None, addrs));
+        expect.insert(
+            "global_only".to_string(),
+            Value::new(None, default.global_only),
+        );
 
         let got = default.collect().unwrap();
         for key in got.keys() {

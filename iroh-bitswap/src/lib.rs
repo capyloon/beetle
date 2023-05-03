@@ -14,8 +14,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use cid::Cid;
 use handler::{BitswapHandler, HandlerEvent};
-use iroh_metrics::record;
-use iroh_metrics::{bitswap::BitswapMetrics, core::MRecorder, inc};
 use libp2p::core::connection::ConnectionId;
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::dial_opts::DialOpts;
@@ -24,9 +22,9 @@ use libp2p::swarm::{
     NotifyHandler, PollParameters,
 };
 use libp2p::{Multiaddr, PeerId};
+use log::{debug, trace, warn};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{debug, trace, warn};
 
 use self::client::{Client, Config as ClientConfig};
 use self::message::BitswapMessage;
@@ -77,19 +75,14 @@ pub struct Bitswap<S: Store> {
     _workers: Arc<Vec<JoinHandle<()>>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum PeerState {
     Connected(ConnectionId),
     Responsive(ConnectionId, ProtocolId),
     Unresponsive,
+    #[default]
     Disconnected,
     DialFailure(Instant),
-}
-
-impl Default for PeerState {
-    fn default() -> Self {
-        PeerState::Disconnected
-    }
 }
 
 impl PeerState {
@@ -298,8 +291,6 @@ impl<S: Store> Bitswap<S> {
     }
 
     fn receive_message(&self, peer: PeerId, message: BitswapMessage) {
-        inc!(BitswapMetrics::MessagesReceived);
-        record!(BitswapMetrics::MessageBytesIn, message.encoded_len() as u64);
         // TODO: Handle backpressure properly
         if let Err(err) = self.incoming_messages.try_send((peer, message)) {
             warn!(
@@ -344,16 +335,13 @@ impl<S: Store> Bitswap<S> {
                     | PeerState::Disconnected
                     | PeerState::Unresponsive => {
                         if old_state.is_connected() {
-                            inc!(BitswapMetrics::DisconnectedPeers);
                             self.peer_disconnected(peer);
                         }
                     }
                     PeerState::Connected(_) => {
                         // nothing, just recorded until we receive protocol confirmation
-                        inc!(BitswapMetrics::ConnectedPeers);
                     }
                     PeerState::Responsive(_, _) => {
-                        inc!(BitswapMetrics::ResponsivePeers);
                         self.peer_connected(peer);
                     }
                 }
@@ -366,14 +354,10 @@ impl<S: Store> Bitswap<S> {
                     PeerState::DialFailure(_)
                     | PeerState::Disconnected
                     | PeerState::Unresponsive => {
-                        inc!(BitswapMetrics::DisconnectedPeers);
                         self.peer_disconnected(peer);
                     }
-                    PeerState::Connected(_) => {
-                        inc!(BitswapMetrics::ConnectedPeers);
-                    }
+                    PeerState::Connected(_) => {}
                     PeerState::Responsive(_, _) => {
-                        inc!(BitswapMetrics::ResponsivePeers);
                         self.peer_connected(peer);
                     }
                 }
@@ -512,7 +496,6 @@ impl<S: Store> NetworkBehaviour for Bitswap<S> {
         cx: &mut Context,
         _: &mut impl PollParameters,
     ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-        inc!(BitswapMetrics::NetworkBehaviourActionPollTick);
         // limit work
         for _ in 0..50 {
             match Pin::new(&mut self.network).poll(cx) {
@@ -590,7 +573,7 @@ impl<S: Store> NetworkBehaviour for Bitswap<S> {
                         response,
                         connection_id,
                     } => {
-                        tracing::debug!("send message {}", peer);
+                        log::debug!("send message {}", peer);
                         return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
                             peer_id: peer,
                             handler: NotifyHandler::One(connection_id),
@@ -643,9 +626,8 @@ mod tests {
     use libp2p::tcp::{tokio::Transport as TcpTransport, Config as TcpConfig};
     use libp2p::yamux::YamuxConfig;
     use libp2p::{noise, PeerId, Swarm, Transport};
+    use log::{info, trace};
     use tokio::sync::{mpsc, RwLock};
-    use tracing::{info, trace};
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     use super::*;
     use crate::Block;
@@ -759,11 +741,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_128_block() {
-        tracing_subscriber::registry()
-            .with(fmt::layer().pretty())
-            .with(EnvFilter::from_default_env())
-            .init();
-
         get_block::<128>().await;
     }
 

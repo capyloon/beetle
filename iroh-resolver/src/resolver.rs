@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cid::Cid;
 use futures::{Future, Stream, TryStreamExt};
-use iroh_metrics::inc;
 use iroh_unixfs::{
     codecs::Codec,
     content_loader::{ContentLoader, ContextId, LoaderContext},
@@ -22,14 +21,9 @@ use iroh_unixfs::{
 use libipld::codec::Encode;
 use libipld::prelude::Codec as _;
 use libipld::{Ipld, IpldCodec};
+use log::{debug, trace, warn};
 use tokio::io::{AsyncRead, AsyncSeek};
 use tokio::task::JoinHandle;
-use tracing::{debug, trace, warn};
-
-use iroh_metrics::{
-    core::MRecorder,
-    resolver::{OutMetrics, ResolverMetrics},
-};
 
 use crate::dns_resolver::{Config, DnsResolver};
 
@@ -337,11 +331,10 @@ impl Out {
     pub fn unixfs_read_dir<'a, 'b: 'a, C: ContentLoader>(
         &'a self,
         loader: &'b Resolver<C>,
-        om: OutMetrics,
     ) -> Result<Option<UnixfsChildStream<'a>>> {
         match &self.content {
             OutContent::Unixfs(node) => {
-                node.as_child_reader(self.context.clone(), loader.loader().clone(), om)
+                node.as_child_reader(self.context.clone(), loader.loader().clone())
             }
             _ => Ok(None),
         }
@@ -350,7 +343,6 @@ impl Out {
     pub fn pretty<T: ContentLoader>(
         self,
         loader: Resolver<T>,
-        om: OutMetrics,
         pos_max: Option<usize>,
     ) -> Result<OutPrettyReader<T>> {
         let pos = 0;
@@ -359,30 +351,30 @@ impl Out {
                 if let Some(pos_max) = pos_max {
                     bytes.truncate(pos_max);
                 }
-                Ok(OutPrettyReader::DagPb(BytesReader { pos, bytes, om }))
+                Ok(OutPrettyReader::DagPb(BytesReader { pos, bytes }))
             }
             OutContent::DagCbor(_, mut bytes) => {
                 if let Some(pos_max) = pos_max {
                     bytes.truncate(pos_max);
                 }
-                Ok(OutPrettyReader::DagCbor(BytesReader { pos, bytes, om }))
+                Ok(OutPrettyReader::DagCbor(BytesReader { pos, bytes }))
             }
             OutContent::DagJson(_, mut bytes) => {
                 if let Some(pos_max) = pos_max {
                     bytes.truncate(pos_max);
                 }
-                Ok(OutPrettyReader::DagJson(BytesReader { pos, bytes, om }))
+                Ok(OutPrettyReader::DagJson(BytesReader { pos, bytes }))
             }
             OutContent::Raw(_, mut bytes) => {
                 if let Some(pos_max) = pos_max {
                     bytes.truncate(pos_max);
                 }
-                Ok(OutPrettyReader::Raw(BytesReader { pos, bytes, om }))
+                Ok(OutPrettyReader::Raw(BytesReader { pos, bytes }))
             }
             OutContent::Unixfs(node) => {
                 let ctx = self.context;
                 let reader = node
-                    .into_content_reader(ctx, loader.loader().clone(), om, pos_max)?
+                    .into_content_reader(ctx, loader.loader().clone(), pos_max)?
                     .ok_or_else(|| anyhow!("cannot read the contents of a directory"))?;
 
                 Ok(OutPrettyReader::Unixfs(reader))
@@ -496,7 +488,6 @@ impl<T: ContentLoader> OutPrettyReader<T> {
 pub struct BytesReader {
     pos: usize,
     bytes: Bytes,
-    om: OutMetrics,
 }
 
 impl BytesReader {
@@ -518,13 +509,12 @@ impl<T: ContentLoader + Unpin + 'static> AsyncRead for OutPrettyReader<T> {
             | OutPrettyReader::DagJson(bytes_reader)
             | OutPrettyReader::Raw(bytes_reader) => {
                 let pos_current = bytes_reader.pos;
-                let bytes_read = read_data_to_buf(
+                let _bytes_read = read_data_to_buf(
                     &mut bytes_reader.pos,
                     Some(bytes_reader.bytes.len()),
                     &bytes_reader.bytes[pos_current..],
                     buf,
                 );
-                bytes_reader.om.observe_bytes_read(pos_current, bytes_read);
                 Poll::Ready(Ok(()))
             }
             OutPrettyReader::Unixfs(r) => Pin::new(&mut *r).poll_read(cx, buf),
@@ -635,7 +625,6 @@ impl<T: ContentLoader> Resolver<T> {
         &self.loader
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn resolve_recursive_with_paths(
         &self,
         root: Path,
@@ -656,7 +645,7 @@ impl<T: ContentLoader> Resolver<T> {
                     // TODO(ramfox): we may want to just keep the stream and iterate over the links
                     // that way, rather than gathering and then chunking again
                     let links: Result<Vec<Link>> = current
-                        .unixfs_read_dir(&this, OutMetrics::default())?
+                        .unixfs_read_dir(&this, )?
                         .expect("already know this is a directory")
                         .try_collect()
                         .await;
@@ -690,7 +679,6 @@ impl<T: ContentLoader> Resolver<T> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn resolve_recursive(&self, root: Path) -> impl Stream<Item = Result<Out>> {
         let this = self.clone();
         self.resolve_recursive_mapped(root, None, move |cid, ctx| {
@@ -700,7 +688,7 @@ impl<T: ContentLoader> Resolver<T> {
     }
 
     /// Resolve a path recursively and yield the raw bytes plus metadata.
-    #[tracing::instrument(skip(self))]
+
     pub fn resolve_recursive_raw(
         &self,
         root: Path,
@@ -718,7 +706,6 @@ impl<T: ContentLoader> Resolver<T> {
     }
 
     /// Resolve a path recursively and supply a closure to resolve cids to outputs.
-    #[tracing::instrument(skip(self, resolve))]
     pub fn resolve_recursive_mapped<O, M, F>(
         &self,
         root: Path,
@@ -777,7 +764,7 @@ impl<T: ContentLoader> Resolver<T> {
     }
 
     /// Resolves through a given path, returning the [`Cid`] and raw bytes of the final leaf.
-    #[tracing::instrument(skip(self))]
+
     pub async fn resolve(&self, path: Path) -> Result<Out> {
         let ctx = LoaderContext::from_path(self.next_id(), self.session_closer.clone());
 
@@ -786,7 +773,7 @@ impl<T: ContentLoader> Resolver<T> {
 
     /// Resolves through a given path, returning the [`Cid`] and raw bytes of the final leaf.
     /// Forces the RAW codec.
-    #[tracing::instrument(skip(self))]
+
     pub async fn resolve_raw(&self, path: Path) -> Result<Out> {
         let ctx = LoaderContext::from_path(self.next_id(), self.session_closer.clone());
 
@@ -801,10 +788,6 @@ impl<T: ContentLoader> Resolver<T> {
     ) -> Result<Out> {
         // Resolve the root block.
         let (root_cid, loaded_cid) = self.resolve_root(&path, &mut ctx).await?;
-        match loaded_cid.source {
-            Source::Store(_) => inc!(ResolverMetrics::CacheHit),
-            _ => inc!(ResolverMetrics::CacheMiss),
-        }
 
         let codec = match force_raw {
             true => Codec::Raw,
@@ -864,7 +847,6 @@ impl<T: ContentLoader> Resolver<T> {
     }
 
     /// Resolves through both DagPb and nested UnixFs DAGs.
-    #[tracing::instrument(skip(self, loaded_cid))]
     async fn resolve_dag_pb_or_unixfs(
         &self,
         root_path: Path,
@@ -912,7 +894,6 @@ impl<T: ContentLoader> Resolver<T> {
         }
     }
 
-    #[tracing::instrument(skip(self, loaded_cid))]
     async fn resolve_ipld(
         &self,
         root_path: Path,
@@ -963,7 +944,6 @@ impl<T: ContentLoader> Resolver<T> {
         })
     }
 
-    #[tracing::instrument(skip(self, root))]
     async fn resolve_ipld_path(
         &self,
         _cid: Cid,
@@ -1003,7 +983,6 @@ impl<T: ContentLoader> Resolver<T> {
         Ok((codec, current))
     }
 
-    #[tracing::instrument(skip(self))]
     async fn load_ipld_link(&self, cid: Cid, ctx: &mut LoaderContext) -> Result<(IpldCodec, Ipld)> {
         let codec: IpldCodec = cid.codec().try_into()?;
 
@@ -1016,7 +995,6 @@ impl<T: ContentLoader> Resolver<T> {
         Ok((codec, ipld))
     }
 
-    #[tracing::instrument(skip(self, name))]
     fn get_dagpb_link<I: Into<String>>(&self, ipld: Ipld, name: I) -> Result<Ipld> {
         let name = name.into();
         let links = ipld
@@ -1049,8 +1027,7 @@ impl<T: ContentLoader> Resolver<T> {
         anyhow::bail!("could not find DagPb link '{}'", name);
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn resolve_path_to_cid(&self, root: &Path, ctx: &mut LoaderContext) -> Result<Cid> {
+    async fn resolve_path_to_cid(&self, root: &Path, _ctx: &mut LoaderContext) -> Result<Cid> {
         let mut current = root.clone();
 
         // maximum cursion of ipns lookups
@@ -1083,25 +1060,21 @@ impl<T: ContentLoader> Resolver<T> {
         bail!("cannot resolve {}, too many recursive lookups", root);
     }
 
-    #[tracing::instrument(skip(self))]
     async fn resolve_root(&self, root: &Path, ctx: &mut LoaderContext) -> Result<(Cid, LoadedCid)> {
         let cid = self.resolve_path_to_cid(root, ctx).await?;
         let loaded_cid = self.load_cid(&cid, ctx).await?;
         Ok((cid, loaded_cid))
     }
 
-    #[tracing::instrument(skip(self))]
     async fn load_cid(&self, cid: &Cid, ctx: &mut LoaderContext) -> Result<LoadedCid> {
         self.loader.load_cid(cid, ctx).await
     }
 
-    #[tracing::instrument(skip(self))]
     pub async fn has_cid(&self, cid: &Cid) -> Result<bool> {
         self.loader.has_cid(cid).await
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn load_ipns_record(&self, cid: &Cid) -> Result<Cid> {
+    async fn load_ipns_record(&self, _cid: &Cid) -> Result<Cid> {
         todo!()
     }
 }
@@ -1167,12 +1140,7 @@ mod tests {
     ) -> UnixfsContentReader<T> {
         let mut cr = node
             .clone()
-            .into_content_reader(
-                ctx,
-                resolver.loader().clone(),
-                OutMetrics::default(),
-                Some(range.end as usize),
-            )
+            .into_content_reader(ctx, resolver.loader().clone(), Some(range.end as usize))
             .unwrap()
             .unwrap();
         let n = cr
@@ -1306,13 +1274,9 @@ mod tests {
                 let new_ipld = resolver.resolve(path.parse().unwrap()).await.unwrap();
                 let m = new_ipld.metadata().clone();
 
-                let out_bytes = read_to_vec(
-                    new_ipld
-                        .pretty(resolver.clone(), OutMetrics::default(), None)
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
+                let out_bytes = read_to_vec(new_ipld.pretty(resolver.clone(), None).unwrap())
+                    .await
+                    .unwrap();
                 let out_ipld: Ipld = codec.decode(&out_bytes).unwrap();
                 assert_eq!(out_ipld, Ipld::String("Foo".to_string()));
 
@@ -1335,13 +1299,9 @@ mod tests {
                 let new_ipld = resolver.resolve(path.parse().unwrap()).await.unwrap();
                 let m = new_ipld.metadata().clone();
 
-                let out_bytes = read_to_vec(
-                    new_ipld
-                        .pretty(resolver.clone(), OutMetrics::default(), None)
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
+                let out_bytes = read_to_vec(new_ipld.pretty(resolver.clone(), None).unwrap())
+                    .await
+                    .unwrap();
                 let out_ipld: Ipld = codec.decode(&out_bytes).unwrap();
                 assert_eq!(out_ipld, Ipld::Integer(1));
 
@@ -1413,7 +1373,7 @@ mod tests {
             let ipld_foo = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
             let ls = ipld_foo
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .unwrap()
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -1435,10 +1395,7 @@ mod tests {
             let path = format!("/ipfs/{root_cid_str}/hello.txt");
             let ipld_hello_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
-            assert!(ipld_hello_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
-                .unwrap()
-                .is_none());
+            assert!(ipld_hello_txt.unixfs_read_dir(&resolver).unwrap().is_none());
 
             let m = ipld_hello_txt.metadata();
             assert_eq!(m.unixfs_type, Some(UnixfsType::File));
@@ -1459,7 +1416,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_hello_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None,
                         )
                         .unwrap()
@@ -1477,10 +1433,7 @@ mod tests {
             let path = format!("/ipfs/{hello_txt_cid_str}");
             let ipld_hello_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
-            assert!(ipld_hello_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
-                .unwrap()
-                .is_none());
+            assert!(ipld_hello_txt.unixfs_read_dir(&resolver).unwrap().is_none());
 
             let m = ipld_hello_txt.metadata();
             assert_eq!(m.unixfs_type, Some(UnixfsType::File));
@@ -1495,7 +1448,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_hello_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None,
                         )
                         .unwrap()
@@ -1514,7 +1466,7 @@ mod tests {
             let ipld_bar = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
             let ls = ipld_bar
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .unwrap()
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -1558,7 +1510,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None,
                         )
                         .unwrap()
@@ -1829,7 +1780,7 @@ mod tests {
                 .unwrap();
 
             let ls = ipld_foo
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .unwrap()
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -1852,7 +1803,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_hello_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None,
                         )
                         .unwrap()
@@ -1873,7 +1823,7 @@ mod tests {
                 .unwrap();
 
             let ls = ipld_bar
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .unwrap()
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -1895,7 +1845,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -1959,14 +1908,9 @@ mod tests {
 
             if let OutContent::Unixfs(node) = ipld_readme.content {
                 let content = read_to_string(
-                    node.into_content_reader(
-                        ipld_readme.context,
-                        resolver.loader().clone(),
-                        OutMetrics::default(),
-                        None,
-                    )
-                    .unwrap()
-                    .unwrap(),
+                    node.into_content_reader(ipld_readme.context, resolver.loader().clone(), None)
+                        .unwrap()
+                        .unwrap(),
                 )
                 .await;
                 print!("{content}");
@@ -2106,10 +2050,7 @@ mod tests {
             let path = format!("/ipfs/{root_cid_str}/hello.txt");
             let ipld_hello_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
-            assert!(ipld_hello_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
-                .unwrap()
-                .is_none());
+            assert!(ipld_hello_txt.unixfs_read_dir(&resolver).unwrap().is_none());
 
             let m = ipld_hello_txt.metadata();
             assert_eq!(m.unixfs_type, Some(UnixfsType::File));
@@ -2130,7 +2071,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_hello_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -2149,7 +2089,7 @@ mod tests {
             let ipld_bar = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
             let ls = ipld_bar
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .unwrap()
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -2187,7 +2127,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -2225,7 +2164,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -2263,7 +2201,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None,
                         )
                         .unwrap()
@@ -2301,7 +2238,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -2329,7 +2265,6 @@ mod tests {
                         node.into_content_reader(
                             ipld_bar_txt.context,
                             resolver.loader().clone(),
-                            OutMetrics::default(),
                             None
                         )
                         .unwrap()
@@ -2378,10 +2313,7 @@ mod tests {
             let path = format!("/ipfs/{root_cid_str}/bar/bar.txt");
             let ipld_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
-            assert!(ipld_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
-                .unwrap()
-                .is_none());
+            assert!(ipld_txt.unixfs_read_dir(&resolver).unwrap().is_none());
 
             let m = ipld_txt.metadata();
             assert_eq!(m.unixfs_type, Some(UnixfsType::File));
@@ -2392,14 +2324,9 @@ mod tests {
             if let OutContent::Unixfs(node) = ipld_txt.content {
                 assert_eq!(
                     read_to_string(
-                        node.into_content_reader(
-                            ipld_txt.context,
-                            resolver.loader().clone(),
-                            OutMetrics::default(),
-                            None
-                        )
-                        .unwrap()
-                        .unwrap()
+                        node.into_content_reader(ipld_txt.context, resolver.loader().clone(), None)
+                            .unwrap()
+                            .unwrap()
                     )
                     .await,
                     "world\n",
@@ -2414,7 +2341,7 @@ mod tests {
             let ipld_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
             let mut links = ipld_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
+                .unixfs_read_dir(&resolver)
                 .expect("missing listing")
                 .unwrap()
                 .try_collect::<Vec<_>>()
@@ -2449,10 +2376,7 @@ mod tests {
             let path = format!("/ipfs/{root_cid_str}/{i}.txt");
             let ipld_txt = resolver.resolve(path.parse().unwrap()).await.unwrap();
 
-            assert!(ipld_txt
-                .unixfs_read_dir(&resolver, OutMetrics::default())
-                .unwrap()
-                .is_none());
+            assert!(ipld_txt.unixfs_read_dir(&resolver).unwrap().is_none());
 
             let m = ipld_txt.metadata();
             assert_eq!(m.unixfs_type, Some(UnixfsType::File));
@@ -2463,14 +2387,9 @@ mod tests {
             if let OutContent::Unixfs(node) = ipld_txt.content {
                 assert_eq!(
                     read_to_string(
-                        node.into_content_reader(
-                            ipld_txt.context,
-                            resolver.loader().clone(),
-                            OutMetrics::default(),
-                            None
-                        )
-                        .unwrap()
-                        .unwrap()
+                        node.into_content_reader(ipld_txt.context, resolver.loader().clone(), None)
+                            .unwrap()
+                            .unwrap()
                     )
                     .await,
                     format!("{i}\n"),

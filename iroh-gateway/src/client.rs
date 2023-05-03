@@ -8,19 +8,13 @@ use cid::Cid;
 use futures::{StreamExt, TryStream};
 use http::HeaderMap;
 use iroh_car::{CarHeader, CarWriter};
-use iroh_metrics::{
-    core::{MObserver, MRecorder},
-    gateway::{GatewayHistograms, GatewayMetrics},
-    observe, record,
-    resolver::OutMetrics,
-};
 use iroh_resolver::dns_resolver::Config;
 use iroh_resolver::resolver::{CidOrDomain, Metadata, Out, OutPrettyReader, OutType, Resolver};
-use iroh_unixfs::{content_loader::ContentLoader, Source};
+use iroh_unixfs::content_loader::ContentLoader;
+use log::{info, warn};
 use mime::Mime;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 use tokio_util::io::ReaderStream;
-use tracing::{info, warn};
 
 use crate::response::ResponseFormat;
 use crate::{constants::RECURSION_LIMIT, handler_params::GetParams};
@@ -95,7 +89,6 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     pub async fn retrieve_path_metadata(
         &self,
         path: iroh_resolver::resolver::Path,
@@ -114,12 +107,10 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
         self.resolver.resolve(path).await.map_err(|e| e.to_string())
     }
 
-    #[tracing::instrument(skip(self))]
     pub async fn get_file(
         &self,
         path: iroh_resolver::resolver::Path,
         path_metadata: Option<Out>,
-        start_time: std::time::Instant,
         range: Option<Range<u64>>,
     ) -> Result<(FileResult<T>, Metadata), String> {
         info!("get file {}", path);
@@ -129,7 +120,6 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
             self.retrieve_path_metadata(path.clone(), None).await?
         };
         let metadata = path_metadata.metadata().clone();
-        record_ttfb_metrics(start_time, &metadata.source);
 
         if path_metadata.is_dir() {
             let body = FileResult::Directory(path_metadata);
@@ -138,7 +128,6 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
             let reader = path_metadata
                 .pretty(
                     self.resolver.clone(),
-                    OutMetrics { start: start_time },
                     range.as_ref().map(|range| range.end as usize),
                 )
                 .map_err(|e| e.to_string())?;
@@ -164,19 +153,17 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     pub async fn get_car_recursive(
         self,
         path: iroh_resolver::resolver::Path,
-        start_time: std::time::Instant,
     ) -> Result<axum::body::StreamBody<ReaderStream<tokio::io::DuplexStream>>, String> {
         info!("get car {}", path);
         // TODO: Find out what a good buffer size is here.
         let (writer, reader) = tokio::io::duplex(1024 * 64);
         let body = axum::body::StreamBody::new(ReaderStream::new(reader));
-        let client = self.clone();
+        let client = self;
         tokio::task::spawn(async move {
-            if let Err(e) = fetch_car_recursive(&client.resolver, path, writer, start_time).await {
+            if let Err(e) = fetch_car_recursive(&client.resolver, path, writer).await {
                 warn!("failed to load recursively: {:?}", e);
             }
         });
@@ -184,11 +171,9 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
         Ok(body)
     }
 
-    #[tracing::instrument(skip(self))]
     pub async fn get_file_recursive(
         self,
         path: iroh_resolver::resolver::Path,
-        start_time: std::time::Instant,
     ) -> Result<axum::body::Body, String> {
         info!("get file {}", path);
         let (mut sender, body) = axum::body::Body::channel();
@@ -200,13 +185,7 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
             while let Some(res) = res.next().await {
                 match res {
                     Ok(res) => {
-                        let metadata = res.metadata().clone();
-                        record_ttfb_metrics(start_time, &metadata.source);
-                        let reader = res.pretty(
-                            self.resolver.clone(),
-                            OutMetrics { start: start_time },
-                            None,
-                        );
+                        let reader = res.pretty(self.resolver.clone(), None);
                         match reader {
                             Ok(mut reader) => {
                                 let mut bytes = Vec::new();
@@ -234,7 +213,6 @@ impl<T: ContentLoader + std::marker::Unpin> Client<T> {
 }
 
 impl<T: ContentLoader> Client<T> {
-    #[tracing::instrument(skip(self))]
     pub async fn has_file_locally(&self, cid: &Cid) -> Result<bool> {
         info!("has cid {}", cid);
         self.resolver.has_cid(cid).await
@@ -267,7 +245,6 @@ async fn fetch_car_recursive<T, W>(
     resolver: &Resolver<T>,
     path: iroh_resolver::resolver::Path,
     writer: W,
-    start_time: std::time::Instant,
 ) -> Result<(), anyhow::Error>
 where
     T: ContentLoader,
@@ -287,27 +264,9 @@ where
 
     while let Some(block) = stream.next().await {
         let block = block?;
-        record_ttfb_metrics(start_time, block.source());
         writer.write(*block.cid(), block.content()).await?;
     }
     Ok(())
-}
-
-fn record_ttfb_metrics(start_time: std::time::Instant, source: &Source) {
-    record!(
-        GatewayMetrics::TimeToFetchFirstBlock,
-        start_time.elapsed().as_millis() as u64
-    );
-    match *source {
-        Source::Store(_) => observe!(
-            GatewayHistograms::TimeToFetchFirstBlockCached,
-            start_time.elapsed().as_millis() as f64
-        ),
-        _ => observe!(
-            GatewayHistograms::TimeToFetchFirstBlock,
-            start_time.elapsed().as_millis() as f64
-        ),
-    }
 }
 
 pub(crate) fn sniff_content_type(body_sample: &[u8]) -> Mime {

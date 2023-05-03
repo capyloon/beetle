@@ -1,15 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
-use iroh_metrics::bitswap::BitswapMetrics;
-use iroh_metrics::{core::MRecorder, inc, record};
-
 use ahash::AHashSet;
 use anyhow::Result;
 use cid::Cid;
 use derivative::Derivative;
 use futures::future::BoxFuture;
 use libp2p::PeerId;
-use tracing::{debug, error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::{block::Block, message::BitswapMessage, network::Network, Store};
 
@@ -91,7 +88,6 @@ impl<S: Store> Client<S> {
         tokio::task::spawn(async move {
             debug!("starting default receiver");
             loop {
-                inc!(BitswapMetrics::ClientLoopTick);
                 match default_receiver.recv().await {
                     Ok(block) => {
                         debug!("received block {}", block.cid());
@@ -239,18 +235,11 @@ impl<S: Store> Client<S> {
 
     /// Called by the network interface when a new message is received.
     pub async fn receive_message(&self, peer: &PeerId, incoming: &BitswapMessage) {
-        inc!(BitswapMetrics::MessagesProcessingClient);
-
         if incoming.blocks_len() > 0 {
             debug!("client::receive_message {} blocks", incoming.blocks_len());
 
             for block in incoming.blocks() {
                 debug!("recv block; {} from {}", block.cid(), peer);
-                inc!(BitswapMetrics::BlocksIn);
-                record!(
-                    BitswapMetrics::ReceivedBlockBytes,
-                    block.data().len() as u64
-                );
             }
         }
 

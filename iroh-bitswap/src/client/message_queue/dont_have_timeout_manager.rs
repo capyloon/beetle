@@ -8,14 +8,12 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use cid::Cid;
 use derivative::Derivative;
-use iroh_metrics::core::MRecorder;
-use iroh_metrics::{bitswap::BitswapMetrics, inc};
 use libp2p::PeerId;
+use log::debug;
 use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
-use tracing::debug;
 
 use crate::{client::peer_manager::DontHaveTimeout, network::Network};
 
@@ -145,7 +143,6 @@ impl DontHaveTimeoutManager {
             tokio::pin!(delay);
 
             loop {
-                inc!(BitswapMetrics::DontHaveTimeoutLoopTick);
                 tokio::select! {
                     biased;
                     _ = &mut closer_r => {
